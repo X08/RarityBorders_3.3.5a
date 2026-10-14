@@ -1,8 +1,10 @@
 ## Interface: 30300
-## Title: Rarity Borders
+## Title: RarityBorders |cff888888by|r |cffffc90eX08|r |cff888888|||r |cffff7d0aDreamwind (Chromiecraft-EU)|r
 ## Notes: Quality-colored borders, plus optional sparkles and comet trails (each an on/off switch) on items in bags, bank and character frame, with a red tint on items you cannot use.
 ## Version: 1.0
-## Author: ExOAte
+## Author: X08 | Dreamwind (Chromiecraft-EU)
 ## SavedVariables: RarityBordersDB
+## X-Website: https://github.com/X08/RarityBorders_3.3.5a
+## X-Category: Bags & Inventory
 
 RarityBorders.lua
