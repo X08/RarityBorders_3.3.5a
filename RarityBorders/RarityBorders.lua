@@ -649,7 +649,7 @@ SlashCmdList["RARITYBORDERS"] = function(msg)
         end
     elseif cmd == "sparkle" and arg ~= "" then
         db.sparkle = OnOff(arg)
-        print(p .. "sparkles " .. (db.sparkle and "ON (experimental)" or "OFF") .. ".")
+        print(p .. "sparkles " .. (db.sparkle and "ON" or "OFF") .. ".")
     elseif cmd == "style" and (arg == "border" or arg == "sparkle" or arg == "both") then
         -- legacy shortcut from 1.4/1.5
         db.border = (arg == "border" or arg == "both")
@@ -663,7 +663,7 @@ SlashCmdList["RARITYBORDERS"] = function(msg)
         print(p .. "sparkles per item: " .. db.sparkles .. ".")
     elseif cmd == "trail" and arg ~= "" then
         db.trail = OnOff(arg)
-        print(p .. "comet trail " .. (db.trail and "ON (experimental)" or "OFF") .. ".")
+        print(p .. "comet trail " .. (db.trail and "ON" or "OFF") .. ".")
     elseif cmd == "rescan" then
         pendingClear = false
         print(p .. "rescanning items.")
