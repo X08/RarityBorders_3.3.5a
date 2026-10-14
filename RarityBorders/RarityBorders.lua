@@ -3,15 +3,15 @@
 -- 2) Red tint on the icon of items the player cannot use (weapon skill not learned,
 --    wrong armor type, class/skill/level requirement not met), like retail.
 --
--- 2.1: bank bag-slot buttons are skipped (BankFrameItemButton_Update also fires for them and
+-- 0.9rc/1.0: bank bag-slot buttons are skipped (BankFrameItemButton_Update also fires for them and
 --      their ID was being read as a slot of the main bank)
--- 2.0: /rb level removed (level-gated items are always tinted); /rb alpha folded into /rb border
--- 1.9: sparkle start angle is now random over the full 360 degrees
--- 1.8: glint layer removed; sparkles twinkle slower and linger a bit longer before fading
--- 1.7: sparkles rotate while they twinkle (random start angle)
--- 1.6: border / sparkle / trail are now independent on-off switches; slower comet
--- 1.5: experimental comet trail (/rb trail on)
--- 1.2: combat flicker fixes
+-- 0.8: /rb level removed (level-gated items are always tinted); /rb alpha folded into /rb border
+-- 0.7: sparkle start angle is now random over the full 360 degrees
+-- 0.6: glint layer removed; sparkles twinkle slower and linger a bit longer before fading
+-- 0.5: sparkles rotate while they twinkle (random start angle)
+-- 0.4: border / sparkle / trail are now independent on-off switches; slower comet
+-- 0.3: experimental comet trail (/rb trail on)
+-- 0.2: combat flicker fixes
 --   * the stock UI resets icon colour in places that bypass ContainerFrame_Update
 --     (lock changes call SetItemButtonDesaturated) -> tint is now re-applied there too
 --   * a failed/empty tooltip scan never flips an item to "usable"; the last known state is kept
