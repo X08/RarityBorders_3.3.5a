@@ -1,0 +1,8 @@
+## Interface: 30300
+## Title: Rarity Borders
+## Notes: Quality-colored borders, plus optional sparkles and comet trails (each an on/off switch) on items in bags, bank and character frame, with a red tint on items you cannot use.
+## Version: 2.1
+## Author: ExOAte
+## SavedVariables: RarityBordersDB
+
+RarityBorders.lua
