@@ -3,15 +3,19 @@
 -- 2) Red tint on the icon of items the player cannot use (weapon skill not learned,
 --    wrong armor type, class/skill/level requirement not met), like retail.
 --
--- 0.9rc/1.0: bank bag-slot buttons are skipped (BankFrameItemButton_Update also fires for them and
+-- 2.2: compatibility with Bagnon (bags, bank, guild bank), ElvUI (bags, bank, keyring) and, best
+--      effort, other bag addons that call ContainerFrame_UpdateCooldown for their item buttons.
+--      Their own quality borders are hidden while ours are active (/rb overwrite off to keep both).
+--      Nothing of theirs is modified permanently: their settings are never touched.
+-- 2.1: bank bag-slot buttons are skipped (BankFrameItemButton_Update also fires for them and
 --      their ID was being read as a slot of the main bank)
--- 0.8: /rb level removed (level-gated items are always tinted); /rb alpha folded into /rb border
--- 0.7: sparkle start angle is now random over the full 360 degrees
--- 0.6: glint layer removed; sparkles twinkle slower and linger a bit longer before fading
--- 0.5: sparkles rotate while they twinkle (random start angle)
--- 0.4: border / sparkle / trail are now independent on-off switches; slower comet
--- 0.3: experimental comet trail (/rb trail on)
--- 0.2: combat flicker fixes
+-- 2.0: /rb level removed (level-gated items are always tinted); /rb alpha folded into /rb border
+-- 1.9: sparkle start angle is now random over the full 360 degrees
+-- 1.8: glint layer removed; sparkles twinkle slower and linger a bit longer before fading
+-- 1.7: sparkles rotate while they twinkle (random start angle)
+-- 1.6: border / sparkle / trail are now independent on-off switches; slower comet
+-- 1.5: experimental comet trail (/rb trail on)
+-- 1.2: combat flicker fixes
 --   * the stock UI resets icon colour in places that bypass ContainerFrame_Update
 --     (lock changes call SetItemButtonDesaturated) -> tint is now re-applied there too
 --   * a failed/empty tooltip scan never flips an item to "usable"; the last known state is kept
@@ -30,6 +34,8 @@ local defaults = {
     sparkles = 2,        -- sparkles per item (1-4)
     trail = false,       -- EXPERIMENTAL: comet trail running around the item edge
     trailSpeed = 1,      -- 0.25 .. 3, multiplier for the comet speed
+    overwrite = true,    -- hide Bagnon / ElvUI quality borders while our effects are active
+    foreign = true,      -- also decorate buttons of unknown bag addons (best effort)
 }
 
 local function DB()
@@ -306,7 +312,7 @@ end)
 local function SetBorder(button, quality)
     local border = GetBorder(button)
     local db = DB()
-    local show = quality and quality >= db.minQuality
+    local show = quality and quality >= db.minQuality and not button.rbFaded
 
     if show and db.border then
         local r, g, b = GetItemQualityColor(quality)
@@ -351,10 +357,19 @@ end
 
 -- Returns nil if the tooltip could not be read (caller must keep the old state),
 -- otherwise true when the item has no red requirement line (usable) or false when it has one.
-local function ScanTooltip(bag, slot)
+local function ScanTooltip(bag, slot, link)
     scanTip:ClearLines()
     scanTip:SetOwner(WorldFrame, "ANCHOR_NONE")
-    scanTip:SetBagItem(bag, slot)
+    if bag and slot then
+        scanTip:SetBagItem(bag, slot)
+        if (scanTip:NumLines() or 0) < 1 and bag == BANK_CONTAINER and BankButtonIDToInvSlotID then
+            scanTip:SetInventoryItem("player", BankButtonIDToInvSlotID(slot))
+        end
+    elseif link then
+        scanTip:SetHyperlink(link)       -- cached / guild bank items: no bag slot to read
+    else
+        return nil
+    end
 
     local lines = scanTip:NumLines()
     if not lines or lines < 1 then return nil end
@@ -383,7 +398,7 @@ local function IsUnusable(bag, slot, link)
     local key = strmatch(link, "item:[%-%d:]+") or link
     local usable = cache[key]
     if usable == nil then
-        usable = ScanTooltip(bag, slot)
+        usable = ScanTooltip(bag, slot, link)
         if usable == nil then return nil end
         cache[key] = usable
     end
@@ -456,9 +471,9 @@ end
 ----------------------------------------------------------------
 -- Bags and bank
 ----------------------------------------------------------------
-local function UpdateItemButton(button, bag)
-    local slot = button:GetID()
-    local link = GetContainerItemLink(bag, slot)
+-- Shared by the stock UI and every adapter. bag/slot may be nil (cached or guild bank items):
+-- the usability scan then reads the item link instead.
+local function ApplyItemData(button, link, quality, locked, bag, slot)
     if not link then
         button.rbQuality, button.rbUnusable, button.rbLocked = nil, nil, nil
         SetBorder(button, nil)
@@ -466,7 +481,6 @@ local function UpdateItemButton(button, bag)
         return
     end
 
-    local _, _, locked, quality = GetContainerItemInfo(bag, slot)
     if not quality or quality < 0 then quality = QualityFromLink(link) end
     if not quality then quality = button.rbQuality end   -- item data not available this frame: keep what we had
     button.rbQuality = quality
@@ -476,6 +490,18 @@ local function UpdateItemButton(button, bag)
     if unusable ~= nil then button.rbUnusable = unusable end   -- nil = scan failed, keep previous state
     button.rbLocked = locked and true or nil
     ApplyTint(button)
+end
+
+local function UpdateItemButton(button, bag)
+    if button.rbAdapter then return end      -- owned by a bag addon, see "Compatibility"
+    local slot = button:GetID()
+    local link = GetContainerItemLink(bag, slot)
+    local locked, quality
+    if link then
+        local _
+        _, _, locked, quality = GetContainerItemInfo(bag, slot)
+    end
+    ApplyItemData(button, link, quality, locked, bag, slot)
 end
 
 local function UpdateContainerFrame(frame)
@@ -500,7 +526,7 @@ end
 
 if BankFrameItemButton_Update then
     hooksecurefunc("BankFrameItemButton_Update", function(button)
-        if not button then return end
+        if not button or button.rbAdapter then return end
         if IsBankBagButton(button) then
             -- make sure nothing of ours is left on a bag-slot button
             button.rbQuality, button.rbUnusable, button.rbLocked = nil, nil, nil
@@ -536,6 +562,211 @@ if PaperDollItemSlotButton_Update then
 end
 
 ----------------------------------------------------------------
+-- Compatibility with bag addons (Bagnon, ElvUI, others)
+-- Their item buttons are decorated from hooks on their own update functions; nothing is
+-- replaced. Every adapter runs under pcall, so an unexpected change in the other addon can never
+-- break its bags. A button owned by an adapter has .rbAdapter set, which makes the stock
+-- handlers above leave it alone.
+----------------------------------------------------------------
+local adopted = setmetatable({}, { __mode = "k" })   -- button -> "bagnon" | "elvui" | "slot"
+local hooked = {}
+local lastError
+
+local function Overwriting()
+    local db = DB()
+    return db.overwrite and (db.border or db.sparkle or db.trail)
+end
+
+local function Guard(fn)
+    return function(...)
+        local ok, err = pcall(fn, ...)
+        if not ok then lastError = tostring(err) end
+    end
+end
+
+local function Adopt(button, kind)
+    button.rbAdapter = kind
+    adopted[button] = kind
+end
+
+-- Bagnon: ItemSlot (bags, bank, keyring, cached views) and GuildItemSlot --------------------
+local function BagnonApply(self, quality)
+    Adopt(self, "bagnon")
+    local link = self.GetItem and self:GetItem()
+    if self.GetBag then
+        local bag, slot = self:GetBag(), self:GetID()
+        if self.IsCached and self:IsCached() then
+            ApplyItemData(self, link, quality, nil, nil, nil)
+        else
+            local locked
+            if link then locked = select(3, GetContainerItemInfo(bag, slot)) end
+            ApplyItemData(self, link, quality, locked, bag, slot)
+        end
+    else
+        ApplyItemData(self, link, quality, nil, nil, nil)       -- guild bank
+    end
+    if Overwriting() and self.border then self.border:Hide() end
+end
+
+local function BagnonSearch(self)
+    -- Bagnon fades non-matching items by alpha; our effects follow suit
+    local faded = (self:GetAlpha() or 1) < 0.99
+    self.rbFaded = faded or nil
+    SetBorder(self, self.rbQuality)
+    if Overwriting() and self.border then self.border:Hide() end
+end
+
+local function HookBagnonClass(class)
+    if not class then return false end
+    if type(class.SetBorderQuality) ~= "function" then return false end
+    hooksecurefunc(class, "SetBorderQuality", Guard(BagnonApply))
+    if type(class.UpdateSearch) == "function" then
+        hooksecurefunc(class, "UpdateSearch", Guard(BagnonSearch))
+    end
+    return true
+end
+
+local function BagnonQuality(button)
+    if button.GetBag then
+        return (select(4, button:GetItemSlotInfo()))
+    end
+    return QualityFromLink(button:GetItem())
+end
+
+-- ElvUI bags ---------------------------------------------------------------------------------
+local elvE, elvB
+
+local function ApplySlot(button, bag, slot)
+    button.rbBag, button.rbSlot = bag, slot
+    local link = GetContainerItemLink(bag, slot)
+    local locked, quality
+    if link then
+        local _
+        _, _, locked, quality = GetContainerItemInfo(bag, slot)
+    end
+    ApplyItemData(button, link, quality, locked, bag, slot)
+    return link
+end
+
+-- True when ElvUI coloured this slot's border by item quality (not quest / profession bag colours)
+local function ElvQualityBorder(slot, bag, slotID)
+    if not (elvB.db and elvB.db.qualityColors and slot.rarity and slot.rarity > 1) then return false end
+    if elvB.db.questItemColors and GetContainerItemQuestInfo then
+        local isQuest, questId = GetContainerItemQuestInfo(bag, slotID)
+        if questId or isQuest then return false end
+    end
+    return true
+end
+
+local function ElvNeutralise(slot, bag, slotID, link)
+    if link and Overwriting() and slot.SetBackdropBorderColor and ElvQualityBorder(slot, bag, slotID) then
+        local c = elvE.media and elvE.media.bordercolor
+        if c then
+            slot:SetBackdropBorderColor(c[1], c[2], c[3], c[4])
+            slot.ignoreBorderColors = nil
+        end
+    end
+end
+
+local function ElvSlot(self, frame, bagID, slotID)
+    local bags = frame and frame.Bags
+    local bagFrame = bags and bags[bagID]
+    local slot = bagFrame and bagFrame[slotID]
+    if not slot or bagFrame.numSlots ~= GetContainerNumSlots(bagID) then return end
+    Adopt(slot, "elvui")
+    ElvNeutralise(slot, bagID, slotID, ApplySlot(slot, bagID, slotID))
+end
+
+local function ElvKeySlot(self, slotID)
+    local slot = _G["ElvUIKeyFrameItem" .. tostring(slotID)]
+    if not slot then return end
+    Adopt(slot, "elvui")
+    ElvNeutralise(slot, KEYRING_CONTAINER, slotID, ApplySlot(slot, KEYRING_CONTAINER, slotID))
+end
+
+-- Unknown bag addons (best effort): most of them call the stock ContainerFrame_UpdateCooldown
+-- (bag, button) for every item button they update. Stock buttons and adapter buttons are skipped.
+local function IsStockName(name)
+    return name and (strmatch(name, "^ContainerFrame%d+Item%d+$") or strmatch(name, "^BankFrameItem%d+$"))
+end
+
+local function GenericAdopt(bag, button)
+    if not DB().foreign then return end
+    if type(bag) ~= "number" or type(button) ~= "table" or not button.GetID then return end
+    if button.rbAdapter and button.rbAdapter ~= "slot" then return end
+    if IsStockName(button.GetName and button:GetName()) and not button.rbAdapter then return end
+    local slot = button:GetID()
+    if not slot or slot < 1 then return end
+    Adopt(button, "slot")
+    ApplySlot(button, bag, slot)
+end
+
+local function TryAdapters()
+    if not hooked.bagnon then
+        local ace = LibStub and LibStub("AceAddon-3.0", true)
+        local B = ace and ace:GetAddon("Bagnon", true)
+        if B and B.ItemSlot then
+            hooked.bagnon = HookBagnonClass(B.ItemSlot) or nil
+        end
+        hooked.bagnonRef = B or hooked.bagnonRef
+    end
+    if not hooked.guild and hooked.bagnonRef and hooked.bagnonRef.GuildItemSlot then
+        hooked.guild = HookBagnonClass(hooked.bagnonRef.GuildItemSlot) or nil
+    end
+    if not hooked.elvui and _G.ElvUI and type(_G.ElvUI) == "table" then
+        local E = _G.ElvUI[1]
+        local B = E and E.GetModule and E:GetModule("Bags", true)
+        if B and type(B.UpdateSlot) == "function" then
+            elvE, elvB = E, B
+            hooksecurefunc(B, "UpdateSlot", Guard(ElvSlot))
+            if type(B.UpdateKeySlot) == "function" then
+                hooksecurefunc(B, "UpdateKeySlot", Guard(ElvKeySlot))
+            end
+            hooked.elvui = true
+        end
+    end
+    if not hooked.generic and ContainerFrame_UpdateCooldown then
+        hooksecurefunc("ContainerFrame_UpdateCooldown", Guard(GenericAdopt))
+        hooked.generic = true
+    end
+end
+
+-- Re-run the other addon's own update so its borders come back (overwrite off) or go (overwrite on)
+local function RestoreForeign()
+    for button, kind in pairs(adopted) do
+        if kind == "bagnon" and button:IsVisible() and button.UpdateBorder then
+            Guard(button.UpdateBorder)(button)
+        end
+    end
+    if hooked.elvui and elvB.UpdateAllBagSlots then
+        Guard(elvB.UpdateAllBagSlots)(elvB)
+    end
+end
+
+local function RefreshForeign()
+    local foreignOn = DB().foreign
+    for button, kind in pairs(adopted) do
+        if button:IsVisible() and (kind ~= "slot" or foreignOn) then
+            if kind == "bagnon" then
+                Guard(function() BagnonApply(button, BagnonQuality(button)) end)()
+            elseif button.rbBag and button.rbSlot then
+                Guard(ApplySlot)(button, button.rbBag, button.rbSlot)
+            end
+        end
+    end
+end
+
+local function ReleaseGeneric()
+    for button, kind in pairs(adopted) do
+        if kind == "slot" then
+            button.rbQuality, button.rbUnusable, button.rbLocked = nil, nil, nil
+            SetBorder(button, nil)
+            ApplyTint(button)
+        end
+    end
+end
+
+----------------------------------------------------------------
 -- Refresh visible frames
 ----------------------------------------------------------------
 local slotNames = {
@@ -558,6 +789,7 @@ local function RefreshAll()
     if CharacterFrame and CharacterFrame:IsShown() then
         for _, n in ipairs(slotNames) do UpdateSlotButton(_G["Character" .. n .. "Slot"]) end
     end
+    RefreshForeign()
 end
 
 -- Debounced refresh so bursts of events cause one pass
@@ -601,7 +833,9 @@ f:RegisterEvent("PLAYER_TALENT_UPDATE")
 f:SetScript("OnEvent", function(self, event, arg1)
     if event == "ADDON_LOADED" then
         if arg1 == ADDON then DB() end
+        TryAdapters()                -- Bagnon_GuildBank is load-on-demand, so retry on every addon load
     elseif event == "PLAYER_LOGIN" then
+        TryAdapters()
         RefreshAll()
     elseif event == "PLAYER_REGEN_ENABLED" then
         if pendingClear then
@@ -649,7 +883,7 @@ SlashCmdList["RARITYBORDERS"] = function(msg)
         end
     elseif cmd == "sparkle" and arg ~= "" then
         db.sparkle = OnOff(arg)
-        print(p .. "sparkles " .. (db.sparkle and "ON" or "OFF") .. ".")
+        print(p .. "sparkles " .. (db.sparkle and "ON (experimental)" or "OFF") .. ".")
     elseif cmd == "style" and (arg == "border" or arg == "sparkle" or arg == "both") then
         -- legacy shortcut from 1.4/1.5
         db.border = (arg == "border" or arg == "both")
@@ -663,7 +897,22 @@ SlashCmdList["RARITYBORDERS"] = function(msg)
         print(p .. "sparkles per item: " .. db.sparkles .. ".")
     elseif cmd == "trail" and arg ~= "" then
         db.trail = OnOff(arg)
-        print(p .. "comet trail " .. (db.trail and "ON" or "OFF") .. ".")
+        print(p .. "comet trail " .. (db.trail and "ON (experimental)" or "OFF") .. ".")
+    elseif cmd == "overwrite" and arg ~= "" then
+        db.overwrite = OnOff(arg)
+        print(p .. "hiding Bagnon / ElvUI quality borders while ours are on: " .. (db.overwrite and "ON" or "OFF") .. ".")
+    elseif cmd == "foreign" and arg ~= "" then
+        db.foreign = OnOff(arg)
+        if not db.foreign then ReleaseGeneric() end
+        print(p .. "other bag addons (best effort) " .. (db.foreign and "ON" or "OFF") .. ".")
+    elseif cmd == "compat" then
+        local function yn(v) return v and "|cff00ff00hooked|r" or "|cff888888not found|r" end
+        print(p .. "Bagnon " .. yn(hooked.bagnon) .. ", Bagnon guild bank " .. yn(hooked.guild)
+            .. ", ElvUI bags " .. yn(hooked.elvui) .. ", other addons " .. (db.foreign and "on" or "off"))
+        local n = 0
+        for _ in pairs(adopted) do n = n + 1 end
+        print(p .. n .. " buttons from other addons seen" .. (lastError and ("; last error: " .. lastError) or "."))
+        return
     elseif cmd == "rescan" then
         pendingClear = false
         print(p .. "rescanning items.")
@@ -679,9 +928,13 @@ SlashCmdList["RARITYBORDERS"] = function(msg)
         print("  /rb sparkles <1-4>   sparkles per item (sparkle styles)")
         print("  /rb trail on|off     EXPERIMENTAL: fading comet line running around the item edge")
         print("  /rb trailspeed <0.25-3>   comet speed multiplier (1 = default)")
+        print("  /rb overwrite on|off   hide Bagnon / ElvUI quality borders while ours are on (their settings stay untouched)")
+        print("  /rb foreign on|off   decorate buttons of other bag addons too (best effort)")
+        print("  /rb compat           show which bag addons were detected")
         print("  /rb rescan           clear the usability cache and refresh")
         return
     end
     ClearCache()
+    RestoreForeign()
     RefreshAll()
 end
