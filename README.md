@@ -3,8 +3,8 @@
 ### [RarityBorders](https://github.com/X08/RarityBorders_3.3.5a)
 Visual effect indicators for item quality for WotLK 3.3.5a
 
-A lightweight solution to show what rarity your items are through a few options which can be selected individually. The addon can be called for through the command `/rb` or `/rarityborders`.
+A lightweight solution to show what rarity your items are through a few options which can be selected individually. Works in your bags, bank and character frame, and with Bagnon and ElvUI bags. The addon can be called for through the command `/rb` or `/rarityborders`.
 
-**In-game options:** `/rb border <off|on|0.1-1>` - The number is for the opacity. `/rb trail <off|on>` - Shows a randomized trail around each item. `/rb sparkle <off|on>` - Gives each item a few sparkles of their rarity. `/rb unusable <off|on>` - Gives an extra red color on items that cannot be used.
+**In-game options:** `/rb border <off|on|0.1-1>` - The number is for the opacity. `/rb trail <off|on>` - Shows a randomized trail around each item. `/rb sparkle <off|on>` - Gives each item a few sparkles of their rarity. `/rb holo <off|on>` - Experimental holographic shimmer that sweeps over each item in iridescent colors around its rarity; `/rb holo tilt <off|on>` makes it follow your mouse cursor. `/rb unusable <off|on>` - Gives an extra red color on items that cannot be used. `/rb perf <low|normal|high>` - Trade effect smoothness for performance. `/rb overwrite <off|on>` - Hide the Bagnon/ElvUI quality borders while RarityBorders' are on.
 
 *Made by X08 with help of Claude.ai*
