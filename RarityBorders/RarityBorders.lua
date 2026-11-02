@@ -3,25 +3,45 @@
 -- 2) Red tint on the icon of items the player cannot use (weapon skill not learned,
 --    wrong armor type, class/skill/level requirement not met), like retail.
 --
--- 2.2: compatibility with Bagnon (bags, bank, guild bank), ElvUI (bags, bank, keyring) and, best
---      effort, other bag addons that call ContainerFrame_UpdateCooldown for their item buttons.
---      Their own quality borders are hidden while ours are active (/rb overwrite off to keep both).
---      Nothing of theirs is modified permanently: their settings are never touched.
--- 2.1: bank bag-slot buttons are skipped (BankFrameItemButton_Update also fires for them and
---      their ID was being read as a slot of the main bank)
--- 2.0: /rb level removed (level-gated items are always tinted); /rb alpha folded into /rb border
--- 1.9: sparkle start angle is now random over the full 360 degrees
--- 1.8: glint layer removed; sparkles twinkle slower and linger a bit longer before fading
--- 1.7: sparkles rotate while they twinkle (random start angle)
--- 1.6: border / sparkle / trail are now independent on-off switches; slower comet
--- 1.5: experimental comet trail (/rb trail on)
--- 1.2: combat flicker fixes
---   * the stock UI resets icon colour in places that bypass ContainerFrame_Update
---     (lock changes call SetItemButtonDesaturated) -> tint is now re-applied there too
---   * a failed/empty tooltip scan never flips an item to "usable"; the last known state is kept
---   * usability cache is not cleared during combat (skill-up events fire constantly in a fight);
---     it is cleared once combat ends
---   * refreshes triggered by events are debounced
+-- Version numbers are x.y.z: x = release, y = an addition or major change, z = a minor addition or fix.
+--
+-- 1.8.2  Performance: animations run at a fixed, lower update rate (animations are time-based, so
+--        speed is unchanged), only a limited number of sparkles / comets / shimmers run at the same
+--        moment, closed bags cost nothing, no garbage is created per frame any more, and the
+--        shimmer does about half the work per step. /rb perf low|normal|high picks the trade-off.
+-- 1.8.1  Shimmer redrawn: no separate bands visible any more (10 thin rows instead of 4, bell-shaped
+--        brightness profile). Added white-hot core with prism-style colour dispersion, a lens flare
+--        that rides the band across the middle of the item (or sits under the cursor with tilt on)
+--        and a border flash. The textures now come from a fixed pool of 10 frames.
+-- 1.8.0  EXPERIMENTAL holographic shimmer (/rb holo on|off): an iridescent band sweeps across the
+--        item, its colours fanning out around the rarity colour. Optional cursor tilt: while the
+--        mouse is over an item, the band follows the cursor and the hues shift with it.
+--        /rb holo tilt on|off, /rb holo speed <0.25-3>.
+-- 1.7.0  Compatibility with Bagnon (bags, bank, keyring, cached bags, guild bank), ElvUI (bags, bank,
+--        keyring) and, best effort, other bag addons that call ContainerFrame_UpdateCooldown for
+--        their item buttons. Their own quality borders are hidden while ours are active
+--        (/rb overwrite off keeps both); their settings are never touched. /rb foreign, /rb compat.
+-- 1.6.1  Bank bag-slot buttons are skipped (BankFrameItemButton_Update also fires for them and their
+--        ID was being read as a slot of the main bank: the third bag slot glowed green).
+-- 1.6.0  /rb level removed (level-gated items are always tinted); /rb alpha folded into /rb border.
+-- 1.5.2  Sparkle start angle is random over the full 360 degrees.
+-- 1.5.1  Glint layer removed; sparkles twinkle slower and linger a bit longer before fading.
+-- 1.5.0  Sparkles rotate while they twinkle (a glint layer was tried alongside, see 1.5.1).
+-- 1.4.0  Border, sparkle and trail are independent on/off switches; slower comet.
+-- 1.3.0  EXPERIMENTAL comet trail: a short fading line runs around the item edge (/rb trail on).
+-- 1.2.0  EXPERIMENTAL twinkling sparkles in the quality colour (/rb sparkle on).
+-- 1.1.2  Red tint no longer disappears after casting a spell: BAG_UPDATE_COOLDOWN makes the stock UI
+--        reset the icon colour (SetItemButtonTextureVertexColor), so the tint is re-applied there.
+-- 1.1.1  Combat flicker fixes:
+--          * the stock UI resets icon colour in places that bypass ContainerFrame_Update (lock
+--            changes call SetItemButtonDesaturated) -> tint is re-applied there too
+--          * a failed/empty tooltip scan never flips an item to "usable"; the last known state is kept
+--          * the usability cache is not cleared during combat (skill-up events fire constantly in a
+--            fight); it is cleared once combat ends
+--          * refreshes triggered by events are debounced
+-- 1.1.0  First release: quality-colored glow around item buttons (bags, bank, character frame) and a
+--        red tint on the icon of items you cannot use (weapon skill not learned, wrong armor type,
+--        class/skill/level requirement not met), which OGlow does not show.
 
 local ADDON = "RarityBorders"
 
@@ -34,25 +54,47 @@ local defaults = {
     sparkles = 2,        -- sparkles per item (1-4)
     trail = false,       -- EXPERIMENTAL: comet trail running around the item edge
     trailSpeed = 1,      -- 0.25 .. 3, multiplier for the comet speed
+    holo = false,        -- EXPERIMENTAL: holographic shimmer
+    holoTilt = true,     -- the shimmer follows the cursor while it hovers an item
+    holoSpeed = 1,       -- 0.25 .. 3, multiplier for the sweep rate
+    perf = "normal",      -- "low" / "normal" / "high": animation update rate and how many run at once
     overwrite = true,    -- hide Bagnon / ElvUI quality borders while our effects are active
     foreign = true,      -- also decorate buttons of unknown bag addons (best effort)
 }
 
+local dbReady            -- the saved-variables table that already went through the migration below
+local fxVersion = 0      -- bumped whenever a setting changes, so cached per-button effect state is redone
+
 local function DB()
-    RarityBordersDB = RarityBordersDB or {}
     local d = RarityBordersDB
-    if d.style ~= nil then            -- migrate the old single "style" setting (1.4/1.5)
+    if d and d == dbReady then return d end      -- hot path: the drivers ask for the settings every frame
+    RarityBordersDB = RarityBordersDB or {}
+    d = RarityBordersDB
+    dbReady = d
+    if d.style ~= nil then            -- migrate the old single "style" setting (before 1.4.0)
         if d.border == nil then d.border = (d.style == "border" or d.style == "both") end
         if d.sparkle == nil then d.sparkle = (d.style == "sparkle" or d.style == "both") end
         d.style = nil
     end
-    d.glint = nil                     -- removed in 1.8
-    d.tintLevel = nil                 -- removed in 2.0
+    d.glint = nil                     -- removed in 1.5.1
+    d.tintLevel = nil                 -- removed in 1.6.0
     for k, v in pairs(defaults) do
         if d[k] == nil then d[k] = v end
     end
     return d
 end
+
+----------------------------------------------------------------
+-- Performance presets (/rb perf low|normal|high)
+-- Hz = how often an animation is redrawn (all animations are time-based, so this changes smoothness,
+-- never speed); the caps are how many sparkles / comets / shimmers may run at the same moment.
+----------------------------------------------------------------
+local PERF = {
+    low    = { sparkHz = 12, trailHz = 15, holoHz = 15, sparkCap = 20,  trailCap = 8,  holoCap = 3 },
+    normal = { sparkHz = 20, trailHz = 24, holoHz = 24, sparkCap = 60,  trailCap = 24, holoCap = 6 },
+    high   = { sparkHz = 30, trailHz = 30, holoHz = 40, sparkCap = 999, trailCap = 999, holoCap = 10 },
+}
+local function Perf() return PERF[DB().perf] or PERF.normal end
 
 ----------------------------------------------------------------
 -- Rarity border
@@ -79,6 +121,9 @@ end
 ----------------------------------------------------------------
 local SPARK_TEXTURE = "Interface\\Cooldown\\star4"
 local activeSparks = {}      -- button -> true while the button should sparkle
+local sparkRunning = 0       -- sparkles twinkling right now (limited by the perf preset)
+local sparkDriver
+local sparkAcc = 0
 
 -- 3.3.5a textures have no SetRotation, so rotate the texture coordinates instead.
 -- The sampled area is enlarged by sqrt(2) so the star tips are not clipped while turning;
@@ -95,6 +140,11 @@ local function SetTexRotation(tex, angle)
 end
 
 local function ResetSpark(s, button, initial)
+    if s.running then
+        s.running = false
+        sparkRunning = sparkRunning - 1
+    end
+    s.shown, s.lastSize = false, nil
     local w = button:GetWidth()
     if not w or w < 1 then w = 37 end
     s.wait = initial and (random() * 3) or (0.3 + random() * 2.2)   -- pause before next twinkle
@@ -139,33 +189,55 @@ local function StartSparkles(button, quality)
         if not s.enabled then s.tex:Hide() end
     end
     activeSparks[button] = true
+    sparkDriver:Show()
 end
 
 local function StopSparkles(button)
-    if not button.rbSparks then return end
     activeSparks[button] = nil
+    button.rbFxKey = nil
+    if not button.rbSparks then return end
     for i = 1, #button.rbSparks do
         local s = button.rbSparks[i]
         s.enabled = false
+        if s.running then
+            s.running = false
+            sparkRunning = sparkRunning - 1
+        end
+        s.shown = false
         s.tex:Hide()
     end
 end
 
-local sparkDriver = CreateFrame("Frame")
+sparkDriver = CreateFrame("Frame")
 sparkDriver:SetScript("OnUpdate", function(self, elapsed)
+    sparkAcc = sparkAcc + elapsed
+    local perf = Perf()
+    if sparkAcc < 1 / perf.sparkHz then return end
+    local dt = sparkAcc
+    sparkAcc = 0
     local on = DB().sparkle
+    local any = false
     for button in pairs(activeSparks) do
         if not on then
             StopSparkles(button)
-        elseif button:IsVisible() then
+        elseif not button:IsVisible() then
+            StopSparkles(button)                    -- closed bag / hidden frame: costs nothing until it is shown again
+        else
+            any = true
             local sparks = button.rbSparks
             for i = 1, #sparks do
                 local s = sparks[i]
                 if s.enabled then
                     if s.wait > 0 then
-                        s.wait = s.wait - elapsed
+                        s.wait = s.wait - dt
+                    elseif not s.running and sparkRunning >= perf.sparkCap then
+                        s.wait = 0.2 + random() * 0.5          -- too many twinkling already: try again shortly
                     else
-                        s.t = s.t + elapsed
+                        if not s.running then
+                            s.running = true
+                            sparkRunning = sparkRunning + 1
+                        end
+                        s.t = s.t + dt
                         local p = s.t / s.dur
                         if p >= 1 then
                             ResetSpark(s, button)
@@ -174,17 +246,25 @@ sparkDriver:SetScript("OnUpdate", function(self, elapsed)
                             a = a ^ 1.4                            -- softer peak: lingers before fading
                             local size = s.size * (0.5 + 0.5 * a)
                             SetTexRotation(s.tex, s.angle0 + s.spin * p)      -- turns while it twinkles
-                            s.tex:SetWidth(size * SIZE_COMP)
-                            s.tex:SetHeight(size * SIZE_COMP)
+                            if not s.lastSize or math.abs(size - s.lastSize) > 0.25 then
+                                s.lastSize = size
+                                s.tex:SetWidth(size * SIZE_COMP)
+                                s.tex:SetHeight(size * SIZE_COMP)
+                            end
                             s.tex:SetAlpha(a)
-                            s.tex:Show()
+                            if not s.shown then
+                                s.shown = true
+                                s.tex:Show()
+                            end
                         end
                     end
                 end
             end
         end
     end
+    if not any and not next(activeSparks) then self:Hide() end
 end)
+sparkDriver:Hide()
 
 ----------------------------------------------------------------
 -- EXPERIMENTAL: comet trail (/rb trail on)
@@ -195,6 +275,8 @@ local TRAIL_TEXTURE = "Interface\\Buttons\\WHITE8X8"
 local TRAIL_SEGMENTS = 9
 local activeTrails = {}     -- button -> true while the button should run a trail
 local trailAcc = 0
+local trailRunning = 0     -- comets running right now (limited by the perf preset)
+local trailDriver
 
 -- Point on a square outline of half-size `half`, d = distance travelled along it (clockwise).
 local function PerimeterPoint(d, half)
@@ -212,6 +294,11 @@ local function PerimeterPoint(d, half)
 end
 
 local function ResetTrail(t, button, initial)
+    if t.counted then
+        t.counted = false
+        trailRunning = trailRunning - 1
+    end
+    t.shown = false
     local w = button:GetWidth()
     if not w or w < 1 then w = 37 end
     t.w = w
@@ -248,13 +335,20 @@ local function StartTrail(button, quality)
     r, g, b = r + (1 - r) * 0.25, g + (1 - g) * 0.25, b + (1 - b) * 0.25
     for i = 1, #t.segs do t.segs[i]:SetVertexColor(r, g, b) end
     activeTrails[button] = true
+    trailDriver:Show()
 end
 
 local function StopTrail(button)
     local t = button.rbTrail
     activeTrails[button] = nil
+    button.rbFxKey = nil
     if not t then return end
+    if t.counted then
+        t.counted = false
+        trailRunning = trailRunning - 1
+    end
     t.running = false
+    t.shown = false
     for i = 1, #t.segs do t.segs[i]:Hide() end
 end
 
@@ -262,6 +356,12 @@ local function StepTrail(button, t, dt)
     if not t.running then
         t.wait = t.wait - dt
         if t.wait > 0 then return end
+        if trailRunning >= Perf().trailCap then
+            t.wait = 0.2 + random() * 0.5                        -- too many comets already: try again shortly
+            return
+        end
+        t.counted = true
+        trailRunning = trailRunning + 1
         t.running = true
         t.age = 0
         local size = max(2, t.w * 0.075)
@@ -289,14 +389,15 @@ local function StepTrail(button, t, dt)
         seg:SetPoint("CENTER", button, "CENTER", x, y)
         local fade = 1 - (i - 1) / #t.segs
         seg:SetAlpha(env * fade * fade)
-        seg:Show()
+        if not t.shown then seg:Show() end
     end
+    t.shown = true
 end
 
-local trailDriver = CreateFrame("Frame")
+trailDriver = CreateFrame("Frame")
 trailDriver:SetScript("OnUpdate", function(self, elapsed)
     trailAcc = trailAcc + elapsed
-    if trailAcc < 0.03 then return end                               -- ~30 updates/s
+    if trailAcc < 1 / Perf().trailHz then return end
     local dt = trailAcc
     trailAcc = 0
     local on = DB().trail
@@ -305,14 +406,331 @@ trailDriver:SetScript("OnUpdate", function(self, elapsed)
             StopTrail(button)
         elseif button:IsVisible() then
             StepTrail(button, button.rbTrail, dt)
+        else
+            StopTrail(button)                       -- closed bag / hidden frame: costs nothing until it is shown again
         end
     end
+    if not next(activeTrails) then self:Hide() end
 end)
+trailDriver:Hide()
+
+----------------------------------------------------------------
+-- EXPERIMENTAL: holographic shimmer (/rb holo on)
+-- A soft band of light sweeps over the item every few seconds, on its own random timer per item.
+--   * the band is a bell-shaped brightness profile (not a hard stripe) with a white-hot core and
+--     coloured fringes whose hues are fanned out around the item's rarity colour (dispersion, like
+--     light through a prism); the hue also drifts a little from the bottom of the item to the top
+--   * it is slanted; the slant is drawn as HOLO_ROWS thin rows, thin enough that no steps show
+--   * a small lens flare rides the band as it crosses the middle of the item and the border glow
+--     flashes whiter at that moment
+--   * with tilt on, the band, flare, slant and hues follow the mouse cursor while it is over the item
+-- The textures live in a small pool of overlay frames that are lent to whichever items are shimmering
+-- right now, so the cost stays fixed however many items are on screen.
+-- 3.3.5a cannot clip textures, so the band is cut to the icon area by hand (position + width).
+----------------------------------------------------------------
+local HOLO_TEXTURE = "Interface\\Buttons\\WHITE8X8"
+local HOLO_ROWS = 10
+local HOLO_POOL = 10                                  -- most items shimmering at the same moment
+local HOLO_INSET = 2
+local HOLO_POS   = { -1, -0.5, 0, 0.5, 1 }            -- across the band, in half-widths
+local HOLO_ALPHA = { 0, 0.35, 1, 0.35, 0 }            -- bell-shaped brightness
+local HOLO_SAT   = { 1, 0.9, 0.25, 0.9, 1 }           -- white-hot core, saturated fringes
+local HOLO_DISP  = { -1, -0.5, 0, 0.5, 1 }            -- hue dispersion (x HOLO_DISPERSE)
+local HOLO_DISPERSE = 0.07
+local activeHolo = {}          -- button -> true while the button should shimmer
+local holoAcc, holoClock = 0, 0
+local holoPool, holoFree = {}, {}
+local holoBusy = 0            -- band frames lent out right now (limited by the perf preset)
+local holoDriver
+local holoCols = {}           -- scratch colours, reused every step (no garbage)
+for k = 1, 5 do holoCols[k] = { 0, 0, 0 } end
+
+local function RGBToHSV(r, g, b)
+    local mx, mn = max(r, g, b), min(r, g, b)
+    local d = mx - mn
+    if d < 0.0001 then return 0, 0, mx end
+    local h
+    if mx == r then h = ((g - b) / d) % 6
+    elseif mx == g then h = (b - r) / d + 2
+    else h = (r - g) / d + 4 end
+    return h / 6, d / mx, mx
+end
+
+local function HSVToRGB(h, s, v)
+    h = (h % 1) * 6
+    local i = floor(h)
+    local f = h - i
+    local p, q, t = v * (1 - s), v * (1 - s * f), v * (1 - s * (1 - f))
+    i = i % 6
+    if i == 0 then return v, t, p
+    elseif i == 1 then return q, v, p
+    elseif i == 2 then return p, v, t
+    elseif i == 3 then return p, q, v
+    elseif i == 4 then return t, p, v
+    else return v, p, q end
+end
+
+local function Clamp(v, lo, hi) return max(lo, min(hi, v)) end
+
+-- Colour at hue offset `off` from the item's rarity colour; satScale 1 = full, small = near white.
+local function HoloRGB(hl, off, satScale)
+    if hl.rainbow then
+        return HSVToRGB(holoClock * 0.1 + off * 3, 0.8 * satScale, 1)
+    end
+    return HSVToRGB(hl.hue + off, max(0.45, hl.sat * 0.8) * satScale, 1)
+end
+
+local function NewBandFrame()
+    local f = CreateFrame("Frame", nil, UIParent)
+    f.quads = {}
+    for j = 1, HOLO_ROWS do
+        f.quads[j] = {}
+        for k = 1, #HOLO_POS - 1 do
+            local tex = f:CreateTexture(nil, "OVERLAY")
+            tex:SetTexture(HOLO_TEXTURE)
+            tex:SetBlendMode("ADD")
+            tex:Hide()
+            f.quads[j][k] = tex
+        end
+    end
+    f.flare = f:CreateTexture(nil, "OVERLAY")
+    f.flare:SetTexture(SPARK_TEXTURE)
+    f.flare:SetBlendMode("ADD")
+    f.flare:Hide()
+    return f
+end
+
+local function AcquireBand(button)
+    if holoBusy >= min(HOLO_POOL, Perf().holoCap) then return nil end
+    local f = table.remove(holoFree)
+    if not f then
+        f = NewBandFrame()
+        holoPool[#holoPool + 1] = f
+    end
+    holoBusy = holoBusy + 1
+    f:SetParent(button)
+    f:ClearAllPoints()
+    f:SetAllPoints(button)
+    f:SetFrameLevel((button:GetFrameLevel() or 1) + 2)
+    f:Show()
+    return f
+end
+
+local function ReleaseBand(hl)
+    local f = hl.band
+    if not f then return end
+    hl.band = nil
+    for j = 1, HOLO_ROWS do
+        for k = 1, #f.quads[j] do
+            f.quads[j][k]:Hide()
+            f.quads[j][k].rbOn = false
+        end
+    end
+    f.flare:Hide()
+    f:Hide()
+    f:SetParent(UIParent)
+    holoFree[#holoFree + 1] = f
+    holoBusy = holoBusy - 1
+end
+
+local function EnsureHolo(button)
+    local hl = button.rbHolo
+    if hl then return hl end
+    hl = { wait = random() * 6, t = 0, dur = 1.3, hover = 0, flash = 0, phase = random() * 6.2832 }
+    button.rbHolo = hl
+    return hl
+end
+
+local function StartHolo(button, quality)
+    local hl = EnsureHolo(button)
+    local r, g, b = GetItemQualityColor(quality)
+    hl.hue, hl.sat, hl.val = RGBToHSV(r, g, b)
+    hl.rainbow = hl.sat < 0.2          -- grey / white: no colour to fan out from, use the full rainbow
+    activeHolo[button] = true
+    holoDriver:Show()
+end
+
+local function StopHolo(button, restoreBorder)
+    local hl = button.rbHolo
+    activeHolo[button] = nil
+    button.rbFxKey = nil
+    if not hl then return end
+    hl.sweeping = false
+    hl.hover = 0
+    hl.flash = 0
+    ReleaseBand(hl)
+    if restoreBorder then                -- the driver bent the border colour: put the quality colour back
+        local bd = button.rbBorder
+        if bd and bd:IsShown() and button.rbQuality then
+            local r, g, b = GetItemQualityColor(button.rbQuality)
+            bd:SetVertexColor(r, g, b, DB().alpha)
+        end
+    end
+end
+
+-- One piece of a band row: alpha and colour ramp from x0 to x1, cut to the icon area.
+local function SetHoloQuad(tex, band, x0, x1, a0, a1, c0, c1, w, y, rowH)
+    local l, r = max(x0, HOLO_INSET), min(x1, w - HOLO_INSET)
+    if r - l < 0.5 or (a0 < 0.01 and a1 < 0.01) then
+        if tex.rbOn then
+            tex:Hide()
+            tex.rbOn = false
+        end
+        return
+    end
+    local span = x1 - x0
+    local t0, t1 = (l - x0) / span, (r - x0) / span
+    tex:SetPoint("BOTTOMLEFT", band, "BOTTOMLEFT", l, y)     -- same anchor point: replaces the old one
+    if not tex.rbW or math.abs(tex.rbW - (r - l)) > 0.05 then tex.rbW = r - l; tex:SetWidth(r - l) end
+    if tex.rbH ~= rowH then tex.rbH = rowH; tex:SetHeight(rowH) end
+    tex:SetGradientAlpha("HORIZONTAL",
+        c0[1] + (c1[1] - c0[1]) * t0, c0[2] + (c1[2] - c0[2]) * t0, c0[3] + (c1[3] - c0[3]) * t0, a0 + (a1 - a0) * t0,
+        c0[1] + (c1[1] - c0[1]) * t1, c0[2] + (c1[2] - c0[2]) * t1, c0[3] + (c1[3] - c0[3]) * t1, a0 + (a1 - a0) * t1)
+    if not tex.rbOn then
+        tex.rbOn = true
+        tex:Show()
+    end
+end
+
+local function LayoutHoloBand(hl, w, h, center, slant, strength, hueShift, fx, fy, flare)
+    local band = hl.band
+    local rowH = (h - HOLO_INSET * 2) / HOLO_ROWS
+    local bw = w * 0.28
+    for j = 1, HOLO_ROWS do
+        local cx = center + slant * ((j - 1) / (HOLO_ROWS - 1) - 0.5)
+        local rowOff = (j - (HOLO_ROWS + 1) / 2) * 0.012 + hueShift
+        local y = HOLO_INSET + (j - 1) * rowH
+        local cols = holoCols
+        for k = 1, #HOLO_POS do
+            local c = cols[k]
+            c[1], c[2], c[3] = HoloRGB(hl, rowOff + HOLO_DISP[k] * HOLO_DISPERSE, HOLO_SAT[k])
+        end
+        for k = 1, #HOLO_POS - 1 do
+            SetHoloQuad(band.quads[j][k], band, cx + HOLO_POS[k] * bw, cx + HOLO_POS[k + 1] * bw,
+                HOLO_ALPHA[k] * strength, HOLO_ALPHA[k + 1] * strength, cols[k], cols[k + 1], w, y, rowH)
+        end
+    end
+
+    local fl = band.flare
+    if flare > 0.02 then
+        local size = w * (0.35 + 0.2 * flare)
+        local r, g, b = HoloRGB(hl, hueShift, 0.3)
+        SetTexRotation(fl, (fx / w) * 1.5708)
+        fl:ClearAllPoints()
+        fl:SetPoint("CENTER", band, "BOTTOMLEFT", fx, fy)
+        fl:SetWidth(size * SIZE_COMP)
+        fl:SetHeight(size * SIZE_COMP)
+        fl:SetVertexColor(r, g, b)
+        fl:SetAlpha(min(1, flare * 0.9))
+        fl:Show()
+    else
+        fl:Hide()
+    end
+end
+
+local function StepHolo(button, hl, dt, db)
+    local w, h = button:GetWidth(), button:GetHeight()
+    if not w or w < 1 then w = 37 end
+    if not h or h < 1 then h = w end
+    local speed = db.holoSpeed or 1
+
+    local hovering = db.holoTilt and MouseIsOver(button)
+    if hovering then
+        hl.hover = min(1, hl.hover + dt * 6)
+        local cx, cy = GetCursorPosition()
+        local sc, l, bt = button:GetEffectiveScale(), button:GetLeft(), button:GetBottom()
+        if cx and cy and sc and sc > 0 and l and bt then
+            hl.nx = Clamp((cx / sc - l) / w, 0, 1)
+            hl.ny = Clamp((cy / sc - bt) / h, 0, 1)
+        end
+    else
+        hl.hover = max(0, hl.hover - dt * 5)
+    end
+
+    if db.holoTilt and hl.hover > 0 then
+        if not hl.band then hl.band = AcquireBand(button) end
+        if hl.band then
+            hl.sweeping = false
+            local nx, ny = hl.nx or 0.5, hl.ny or 0.5
+            hl.flash = 0.5 * hl.hover
+            LayoutHoloBand(hl, w, h, nx * w, w * (0.15 + 0.5 * ny), 0.55 * hl.hover,
+                (nx - 0.5) * 0.2 + (ny - 0.5) * 0.1,
+                Clamp(nx * w, w * 0.25, w * 0.75), Clamp(ny * h, h * 0.25, h * 0.75), 0.8 * hl.hover)
+        end
+        return
+    end
+
+    if not hl.sweeping then
+        hl.flash = 0
+        ReleaseBand(hl)
+        hl.wait = hl.wait - dt
+        if hl.wait > 0 then return end
+        hl.band = AcquireBand(button)
+        if not hl.band then hl.wait = 0.2 + random() * 0.6; return end   -- every band frame is busy: retry at a random moment (fair)
+        hl.sweeping = true
+        hl.t = 0
+        hl.dur = (1.1 + random() * 0.5) / speed
+        hl.slant = w * (0.25 + random() * 0.2)
+    end
+
+    hl.t = hl.t + dt
+    local p = hl.t / hl.dur
+    if p >= 1 then
+        ReleaseBand(hl)
+        hl.sweeping = false
+        hl.flash = 0
+        hl.wait = (2 + random() * 5) / speed
+        return
+    end
+    local bw = w * 0.28
+    local from, to = -(bw + hl.slant / 2), w + bw + hl.slant / 2
+    local center = from + (to - from) * p
+    local env = min(1, math.sin(p * math.pi) * 3)
+    local prox = max(0, 1 - math.abs(center - w / 2) / (w * 0.45))     -- the flare peaks mid-item
+    hl.flash = env * prox
+    LayoutHoloBand(hl, w, h, center, hl.slant, 0.55 * env,
+        (p - 0.5) * 0.16 + (hl.phase / 6.2832 - 0.5) * 0.06,
+        Clamp(center, w * 0.25, w * 0.75), h / 2, env * prox * 0.9)
+end
+
+holoDriver = CreateFrame("Frame")
+holoDriver:SetScript("OnUpdate", function(self, elapsed)
+    holoAcc = holoAcc + elapsed
+    if holoAcc < 1 / Perf().holoHz then return end
+    local dt = holoAcc
+    holoAcc = 0
+    holoClock = holoClock + dt
+    local db = DB()
+    for button in pairs(activeHolo) do
+        if not db.holo then
+            StopHolo(button, true)
+        elseif button:IsVisible() then
+            local hl = button.rbHolo
+            StepHolo(button, hl, dt, db)
+            -- the border glow breathes through nearby hues and flashes whiter when the band crosses
+            local bd = button.rbBorder
+            if bd and bd:IsShown() and not hl.rainbow then
+                local fl = hl.flash or 0
+                local r, g, b = HSVToRGB(hl.hue + 0.05 * math.sin(holoClock * (db.holoSpeed or 1) * 1.3 + hl.phase),
+                    hl.sat * (1 - 0.6 * fl), hl.val)
+                bd:SetVertexColor(r, g, b, min(1, db.alpha + 0.3 * fl))
+            end
+        else
+            StopHolo(button)                         -- closed bag / hidden frame: give the band frame back, cost nothing
+        end
+    end
+    if not next(activeHolo) then self:Hide() end
+end)
+holoDriver:Hide()
 
 local function SetBorder(button, quality)
-    local border = GetBorder(button)
     local db = DB()
     local show = quality and quality >= db.minQuality and not button.rbFaded
+    -- Bag updates call this for every slot; skip the work when nothing changed for this button.
+    local key = show and quality or -1
+    if button.rbFxKey == key and button.rbFxVer == fxVersion then return end
+    button.rbFxKey, button.rbFxVer = key, fxVersion
+    local border = GetBorder(button)
 
     if show and db.border then
         local r, g, b = GetItemQualityColor(quality)
@@ -333,6 +751,13 @@ local function SetBorder(button, quality)
     else
         StopTrail(button)
     end
+
+    if show and db.holo then
+        StartHolo(button, quality)
+    elseif activeHolo[button] then
+        StopHolo(button)
+    end
+    button.rbFxKey = key          -- the Stop* helpers above clear it; the state is consistent again here
 end
 
 local function QualityFromLink(link)
@@ -574,7 +999,7 @@ local lastError
 
 local function Overwriting()
     local db = DB()
-    return db.overwrite and (db.border or db.sparkle or db.trail)
+    return db.overwrite and (db.border or db.sparkle or db.trail or db.holo)
 end
 
 local function Guard(fn)
@@ -832,7 +1257,7 @@ f:RegisterEvent("LEARNED_SPELL_IN_TAB")
 f:RegisterEvent("PLAYER_TALENT_UPDATE")
 f:SetScript("OnEvent", function(self, event, arg1)
     if event == "ADDON_LOADED" then
-        if arg1 == ADDON then DB() end
+        if arg1 == ADDON then DB(); fxVersion = fxVersion + 1 end
         TryAdapters()                -- Bagnon_GuildBank is load-on-demand, so retry on every addon load
     elseif event == "PLAYER_LOGIN" then
         TryAdapters()
@@ -885,7 +1310,7 @@ SlashCmdList["RARITYBORDERS"] = function(msg)
         db.sparkle = OnOff(arg)
         print(p .. "sparkles " .. (db.sparkle and "ON (experimental)" or "OFF") .. ".")
     elseif cmd == "style" and (arg == "border" or arg == "sparkle" or arg == "both") then
-        -- legacy shortcut from 1.4/1.5
+        -- legacy shortcut from before 1.4.0
         db.border = (arg == "border" or arg == "both")
         db.sparkle = (arg == "sparkle" or arg == "both")
         print(p .. "border " .. (db.border and "ON" or "OFF") .. ", sparkles " .. (db.sparkle and "ON" or "OFF") .. ".")
@@ -898,6 +1323,33 @@ SlashCmdList["RARITYBORDERS"] = function(msg)
     elseif cmd == "trail" and arg ~= "" then
         db.trail = OnOff(arg)
         print(p .. "comet trail " .. (db.trail and "ON (experimental)" or "OFF") .. ".")
+    elseif cmd == "holo" then
+        local sub, val = strmatch(arg, "^(%S*)%s*(.-)$")
+        if sub == "on" or sub == "off" then
+            db.holo = (sub == "on")
+            print(p .. "holographic shimmer " .. (db.holo and "ON (experimental)" or "OFF") .. ".")
+        elseif sub == "tilt" and val ~= "" then
+            db.holoTilt = OnOff(val)
+            print(p .. "shimmer follows the cursor: " .. (db.holoTilt and "ON" or "OFF") .. ".")
+        elseif sub == "speed" and tonumber(val) then
+            db.holoSpeed = max(0.25, min(3, tonumber(val)))
+            print(p .. "shimmer speed x" .. db.holoSpeed .. ".")
+        else
+            print(p .. "shimmer " .. (db.holo and "ON" or "OFF") .. ", cursor tilt " .. (db.holoTilt and "ON" or "OFF")
+                .. ", speed x" .. db.holoSpeed .. "  (usage: /rb holo on|off, /rb holo tilt on|off, /rb holo speed <0.25-3>)")
+            return
+        end
+    elseif cmd == "perf" then
+        if PERF[arg] then
+            db.perf = arg
+            local c = PERF[arg]
+            print(p .. "performance preset " .. arg .. ": animations redrawn " .. c.sparkHz .. "/" .. c.trailHz .. "/" .. c.holoHz
+                .. " times per second (sparkle/comet/shimmer), at most " .. (c.sparkCap < 999 and c.sparkCap or "unlimited") .. " sparkles, "
+                .. (c.trailCap < 999 and c.trailCap or "unlimited") .. " comets and " .. c.holoCap .. " shimmers at once.")
+        else
+            print(p .. "performance preset: " .. (db.perf or "normal") .. "  (usage: /rb perf low|normal|high)")
+            return
+        end
     elseif cmd == "overwrite" and arg ~= "" then
         db.overwrite = OnOff(arg)
         print(p .. "hiding Bagnon / ElvUI quality borders while ours are on: " .. (db.overwrite and "ON" or "OFF") .. ".")
@@ -918,7 +1370,7 @@ SlashCmdList["RARITYBORDERS"] = function(msg)
         print(p .. "rescanning items.")
     else
         local function st(v) return v and "|cff00ff00ON|r" or "|cffff4040OFF|r" end
-        print(p .. "border " .. st(db.border) .. "  sparkle " .. st(db.sparkle) .. "  trail " .. st(db.trail)
+        print(p .. "border " .. st(db.border) .. "  sparkle " .. st(db.sparkle) .. "  trail " .. st(db.trail) .. "  holo " .. st(db.holo)
             .. "  unusable tint " .. st(db.tintUnusable))
         print(p .. "commands")
         print("  /rb min <0-6>        lowest quality that gets an effect (0 gray, 1 white, 2 green, 3 blue, 4 epic)")
@@ -928,6 +1380,10 @@ SlashCmdList["RARITYBORDERS"] = function(msg)
         print("  /rb sparkles <1-4>   sparkles per item (sparkle styles)")
         print("  /rb trail on|off     EXPERIMENTAL: fading comet line running around the item edge")
         print("  /rb trailspeed <0.25-3>   comet speed multiplier (1 = default)")
+        print("  /rb holo on|off      EXPERIMENTAL: iridescent shimmer sweeping over the item")
+        print("  /rb holo tilt on|off the shimmer follows the mouse cursor while it hovers an item")
+        print("  /rb holo speed <0.25-3>   shimmer rate (1 = default)")
+        print("  /rb perf low|normal|high   animation update rate and how many run at once (lower = faster game)")
         print("  /rb overwrite on|off   hide Bagnon / ElvUI quality borders while ours are on (their settings stay untouched)")
         print("  /rb foreign on|off   decorate buttons of other bag addons too (best effort)")
         print("  /rb compat           show which bag addons were detected")
@@ -935,6 +1391,7 @@ SlashCmdList["RARITYBORDERS"] = function(msg)
         return
     end
     ClearCache()
+    fxVersion = fxVersion + 1      -- settings changed: every button redoes its effects on the next refresh
     RestoreForeign()
     RefreshAll()
 end
